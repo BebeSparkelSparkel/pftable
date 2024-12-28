@@ -1,0 +1,47 @@
+.Dd December 28, 2024
+.Dt PFTABLE 1
+.Os
+.Sh NAME
+.Nm pftable
+.Nd manage PF tables based on service data
+.Sh SYNOPSIS
+.Nm
+.Op Fl f Ar service_file
+.Op Fl t Ar pf_table_name
+.Op Fl a
+.Op Fl o Ar output
+.Op Fl v
+.Op Fl n
+.Op Fl h
+.Sh DESCRIPTION
+Reads service data from a file, fetches IP addresses via API or DNS, and optionally updates or modifies a PF table. Supports verbose output, dry runs, and file or stdout output. If neither 
+.Fl t
+nor 
+.Fl o
+are specified, output will go to stdout.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl f Ar service_file
+Specify file containing service data (required)
+.It Fl t Ar pf_table_name
+Specify the PF table name (optional)
+.It Fl a
+Add to the PF table or append to the file instead of replacing (optional)
+.It Fl o Ar output
+Write output to file; use '-' for stdout (optional)
+.It Fl v
+Enable verbose mode (optional)
+.It Fl n
+Dry run; show changes without applying them (optional)
+.It Fl h
+Display this help message (optional)
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds
+.It 0
+Total Success
+.It 1
+Total Failure
+.It 2
+Partial Failure
+.El

@@ -1,0 +1,179 @@
+#!/bin/sh
+
+verbose=0
+dry_run=0
+replace=1
+
+while getopts "f:t:ao:vnh" opt; do
+  case $opt in
+    f) service_file="$OPTARG" ;;
+    t) pf_table="$OPTARG" ;;
+    a) replace=0 ;;
+    o) output="$OPTARG" ;;
+    v) verbose=1 ;;
+    n) dry_run=1 ;;
+    h) man pftable
+       exit 0 ;;
+    *) man -c pftable >&2
+       exit 1 ;;
+  esac
+done
+
+# Used to build the other log_* functions and should not be used elsewhere.
+log() {
+  if [ -t 1 ]; then
+    echo "$*" >&2
+  else
+    command -v logger >/dev/null 2>&1 && logger -t "$(basename "$0")" "$*" || echo "$*" >&2
+  fi
+}
+
+log_info() {
+  level=$1
+  shift
+  if [ "$level" -ge "$verbose" ]; then
+    log "INFO: $*"
+  fi
+}
+
+log_warn() {
+  log "WARNING: $*"
+}
+
+ret=0
+log_error() {
+  ret=2
+  log "ERROR: $*"
+}
+
+log_fatal() {
+  log "FATAL-ERROR: $*"
+  exit 1
+}
+
+log_fatal_or_dry_run_error() {
+  if [ "$dry_run" -gt 0 ]; then
+    log_error "$*"
+  else
+    log_fatal "$*"
+  fi
+}
+
+[ -z "$service_file" ] && log_fatal 'Service data file not specified. Use -f option.'
+
+# Temporary file for building the complete list
+tmp=$(mktemp) || log_fatal "Failed to create temporary file with mktemp"
+trap 'rm "$tmp"' EXIT HUP INT QUIT TERM
+
+# Renamed function for clarity
+process_and_log_addresses() {
+  source=$1
+  addresses=$2
+  status=$3
+  
+  if [ "$status" != "0" ]; then
+    log_error "Failed to fetch addresses for $source"
+    return 1
+  fi
+  
+  if [ -z "$addresses" ]; then
+    log_error "No addresses found for $source"
+    return 1
+  fi
+
+  log_info 1 "Addresses for $source: $addresses"
+
+  # Address format verification
+  address_regex='^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$|^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}(/[0-9]{1,2})?$'
+  invalid_addresses=$(echo "$addresses" | grep -vE "$address_regex" | tr '\n' ' ')
+  echo "$addresses" | grep -E "$address_regex" >> "$tmp"
+
+  if [ -n "$invalid_addresses" ]; then
+    log_error "Invalid address format detected for $source: $invalid_addresses"
+    return 1
+  fi
+  return 0
+}
+
+fetch_service_data() {
+  service=$1
+  url=$2
+  jq_query=$3
+  
+  status=0
+  addresses=$(curl -sf "$url" | jq -er "$jq_query" 2>/dev/null) || status=$?
+  process_and_log_addresses "$service" "$addresses" "$status"
+}
+
+# New function for DNS service lookup
+fetch_dns_data() {
+  service=$1
+  dns_status=0
+  dns_ranges=$(
+    (dig +short -t A "$service";
+     dig +short -t AAAA "$service")
+  ) || dns_status=$?
+  process_and_log_addresses "$service" "$dns_ranges" "$dns_status"
+}
+
+# Process both types of services from the same loop
+while IFS= read -r line; do
+  if [ -z "$line" ]; then
+    continue  # Skip empty lines
+  fi
+
+  # Split line into components
+  IFS=' ' read -r service url json_path << EOF
+$line
+EOF
+  
+  if [ -n "$service" ] && [ -n "$url" ] && [ -n "$json_path" ]; then
+    fetch_service_data "$service" "$url" "$json_path"
+  elif [ -n "$service" ] && [ -z "$url" ] && [ -z "$json_path" ]; then
+    fetch_dns_data "$service"
+  else
+    log_error "Invalid service data format for: $line"
+  fi
+done < "$service_file"
+
+# Check if we got any addresses at all
+[ -s "$tmp" ] || log_fatal "No addresses were successfully retrieved"
+
+[ "$dry_run" = "1" ] && echo "=== Simulated Changes ===" >&2
+if [ -n "$pf_table" ]; then
+  if [ "$dry_run" = "1" ]
+  then echo "Would $([ $replace -eq 1 ] && echo "replace" || echo "add to") the PF table '$pf_table'." >&2
+  else pfctl -t "$pf_table" -T "$([ $replace -eq 1 ] && echo replace || echo add)" -f "$tmp" || log_fatal "Failed to update pf table"
+  fi
+fi
+if [ -n "$output" ]; then
+  if [ "$output" = "-" ]; then
+    if [ "$dry_run" = "1" ]
+    then echo "Would print to stdout." >&2
+    else cat "$tmp" || log_fatal "Failed to print to stdout"
+    fi
+  elif [ $replace -eq 1 ]; then
+    if [ "$dry_run" = "1" ]
+    then echo "Would replace the contents of '$output'." >&2
+    else mv "$tmp" "$output" || log_fatal "Failed to replace $output"
+    fi
+  else
+    if [ "$dry_run" = "1" ]
+    then echo "Would append to '$output'." >&2
+    else cat "$tmp" >> "$output" || log_fatal "Failed to append to $output"
+    fi
+  fi
+fi
+if [ -z "$pf_table" ] && [ -z "$output" ]; then
+  if [ "$dry_run" = "1" ]
+  then echo "Would print to stdout." >&2
+  else cat "$tmp" || log_fatal "Failed to print to stdout"
+  fi
+fi
+if [ "$dry_run" = "1" ]; then
+  echo "The following data would be used:" >&2
+  cat "$tmp" >&2
+  echo "Dry run completed. No changes were applied." >&2
+fi
+
+return $ret
