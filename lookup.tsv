@@ -1,0 +1,3 @@
+bitbucket.all	curl-jq	https://ip-ranges.atlassian.com/	.items[] | select(.product[] | contains("bitbucket")) |                                              .cidr
+bitbucket.ingress	curl-jq	https://ip-ranges.atlassian.com/	.items[] | select(.product[] | contains("bitbucket")) | select(.direction[] | contains("ingress")) | .cidr
+github.git	curl-jq	https://api.github.com/meta	.git[]
